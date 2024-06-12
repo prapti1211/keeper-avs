@@ -23,39 +23,44 @@ contract IncredibleSquaringTaskManager is
     using BN254 for BN254.G1Point;
 
     /* CONSTANT */
-    // The number of blocks from the task initialization within which the aggregator has to respond to
     uint32 public immutable TASK_RESPONSE_WINDOW_BLOCK;
     uint32 public constant TASK_CHALLENGE_WINDOW_BLOCK = 100;
     uint256 internal constant _THRESHOLD_DENOMINATOR = 100;
 
     /* STORAGE */
-    // The latest task index
     uint32 public latestTaskNum;
-
-    // mapping of task indices to all tasks hashes
-    // when a task is created, task hash is stored here,
-    // and responses need to pass the actual task,
-    // which is hashed onchain and checked against this mapping
     mapping(uint32 => bytes32) public allTaskHashes;
-
-    // mapping of task indices to hash of abi.encode(taskResponse, taskResponseMetadata)
     mapping(uint32 => bytes32) public allTaskResponses;
-
     mapping(uint32 => bool) public taskSuccesfullyChallenged;
-
+    // mapping(address => bool) public generator;
+    mapping(address => uint32) public generator; // stacker add with stack amount
     address public aggregator;
-    address public generator;
+    
+
+    // New job mappings
+    uint32 public latestJobId;
+    struct Job {
+        uint32 jobId;
+        string jobType;
+        address jobContractadd;
+        string jobDescription;
+        string status;
+        bytes quorumNumbers;
+        uint32 quorumThresholdPercentage;
+        uint32 timeframe;
+        string gitlink;
+    }
+    mapping(uint32 => Job) public jobs;
 
     /* MODIFIERS */
     modifier onlyAggregator() {
-        require(msg.sender == aggregator, "Aggregator must be the caller");
+        require(msg.sender.address == aggregator[], "Aggregator must be the caller");
         _;
     }
 
-    // onlyTaskGenerator is used to restrict createNewTask from only being called by a permissioned entity
-    // in a real world scenario, this would be removed by instead making createNewTask a payable function
     modifier onlyTaskGenerator() {
-        require(msg.sender == generator, "Task generator must be the caller");
+        // stack ammound must be greater tjan 32 ETH.
+        require( generator[msg.sender] >= 32, "Task generator must be the caller"); 
         _;
     }
 
@@ -70,35 +75,95 @@ contract IncredibleSquaringTaskManager is
         IPauserRegistry _pauserRegistry,
         address initialOwner,
         address _aggregator,
-        address _generator
+        address _generator,
+        uint32 stackamount
     ) public initializer {
         _initializePauser(_pauserRegistry, UNPAUSE_ALL);
         _transferOwnership(initialOwner);
         aggregator = _aggregator;
-        generator = _generator;
+        // generator = _generator;
+        generator[_generator]=stackamount;
     }
 
+    /* EVENTS */
+    event JobCreated(uint32 indexed jobId, string jobType, string jobDescription, address jobContractadd, string gitlink);
+    event JobDeleted(uint32 indexed jobId);
+    event TaskEvent(uint32 indexed jobId, string jobType, string jobDescription, string status, address jobContractadd, string gitlink);
+    event JobStatusUpdated(uint32 indexed jobId, string status);
+    event JobAssigned(uint32 indexed jobId, string jobType, address operator);
+
     /* FUNCTIONS */
-    // NOTE: this function creates new task, assigns it a taskId
+    function createJob(
+        string calldata jobType,
+        string calldata jobDescription,
+        address jobContractadd,
+        string gitlink,
+        string calldata status,
+        bytes calldata quorumNumbers,
+        uint32 quorumThresholdPercentage,
+        uint32 timeframe
+    ) external onlyTaskGenerator {
+        latestJobId++;
+        Job memory newJob = Job({
+            jobId: latestJobId,
+            jobType: jobType,
+            gitlink: gitlink,
+            jobContractadd: jobContractadd,
+            jobDescription: jobDescription,
+            status: status,
+            quorumNumbers: quorumNumbers,
+            quorumThresholdPercentage: quorumThresholdPercentage,
+            timeframe: timeframe
+        });
+        jobs[latestJobId] = newJob;
+        emit JobCreated(latestJobId, jobType, jobDescription, jobContractadd, gitlink);
+    }
+
+    function deleteJob(uint32 jobId) external onlyTaskGenerator {
+        require(jobs[jobId].jobId != 0, "Job does not exist");
+        delete jobs[jobId];
+        emit JobDeleted(jobId);
+    }
+
+    function emitTaskEvent(uint32 jobId, string calldata status,address jobContractadd,string gitlink) external onlyTaskGenerator {
+        Job storage job = jobs[jobId];
+        require(job.jobId != 0, "Job does not exist");
+        emit TaskEvent(jobId, job.jobType, job.jobDescription, status, jobContractadd, gitlink);
+    }
+
+    function updateJobStatus(uint32 jobId, string calldata status) external onlyTaskGenerator {
+        Job storage job = jobs[jobId];
+        require(job.jobId != 0, "Job does not exist");
+        job.status = status;
+        emit JobStatusUpdated(jobId, status);
+    }
+
+    function assignJob(uint32 jobId, address operator) external onlyTaskGenerator {
+        Job storage job = jobs[jobId];
+        require(job.jobId != 0, "Job does not exist");
+        emit JobAssigned(jobId, job.jobType, operator);
+    }
+
     function createNewTask(
         uint256 numberToBeSquared,
         uint32 quorumThresholdPercentage,
+        address jobContractadd,
+        string gitlink,
         bytes calldata quorumNumbers
     ) external onlyTaskGenerator {
-        // create a new task struct
         Task memory newTask;
         newTask.numberToBeSquared = numberToBeSquared;
         newTask.taskCreatedBlock = uint32(block.number);
         newTask.quorumThresholdPercentage = quorumThresholdPercentage;
+        newTask.jobContractadd = jobContractadd;
+        newTask.gitlink = gitlink;
         newTask.quorumNumbers = quorumNumbers;
 
-        // store hash of task onchain, emit event, and increase taskNum
         allTaskHashes[latestTaskNum] = keccak256(abi.encode(newTask));
         emit NewTaskCreated(latestTaskNum, newTask);
         latestTaskNum = latestTaskNum + 1;
     }
 
-    // NOTE: this function responds to existing tasks.
     function respondToTask(
         Task calldata task,
         TaskResponse calldata taskResponse,
@@ -108,13 +173,11 @@ contract IncredibleSquaringTaskManager is
         bytes calldata quorumNumbers = task.quorumNumbers;
         uint32 quorumThresholdPercentage = task.quorumThresholdPercentage;
 
-        // check that the task is valid, hasn't been responsed yet, and is being responsed in time
         require(
             keccak256(abi.encode(task)) ==
                 allTaskHashes[taskResponse.referenceTaskIndex],
             "supplied task does not match the one recorded in the contract"
         );
-        // some logical checks
         require(
             allTaskResponses[taskResponse.referenceTaskIndex] == bytes32(0),
             "Aggregator has already responded to the task"
@@ -125,11 +188,8 @@ contract IncredibleSquaringTaskManager is
             "Aggregator has responded to the task too late"
         );
 
-        /* CHECKING SIGNATURES & WHETHER THRESHOLD IS MET OR NOT */
-        // calculate message which operators signed
         bytes32 message = keccak256(abi.encode(taskResponse));
 
-        // check the BLS signature
         (
             QuorumStakeTotals memory quorumStakeTotals,
             bytes32 hashOfNonSigners
@@ -140,10 +200,7 @@ contract IncredibleSquaringTaskManager is
                 nonSignerStakesAndSignature
             );
 
-        // check that signatories own at least a threshold percentage of each quourm
         for (uint i = 0; i < quorumNumbers.length; i++) {
-            // we don't check that the quorumThresholdPercentages are not >100 because a greater value would trivially fail the check, implying
-            // signed stake > total stake
             require(
                 quorumStakeTotals.signedStakeForQuorum[i] *
                     _THRESHOLD_DENOMINATOR >=
@@ -157,12 +214,10 @@ contract IncredibleSquaringTaskManager is
             uint32(block.number),
             hashOfNonSigners
         );
-        // updating the storage with task responsea
         allTaskResponses[taskResponse.referenceTaskIndex] = keccak256(
             abi.encode(taskResponse, taskResponseMetadata)
         );
 
-        // emitting event
         emit TaskResponded(taskResponse, taskResponseMetadata);
     }
 
@@ -170,9 +225,6 @@ contract IncredibleSquaringTaskManager is
         return latestTaskNum;
     }
 
-    // NOTE: this function enables a challenger to raise and resolve a challenge.
-    // TODO: require challenger to pay a bond for raising a challenge
-    // TODO(samlaf): should we check that quorumNumbers is same as the one recorded in the task?
     function raiseAndResolveChallenge(
         Task calldata task,
         TaskResponse calldata taskResponse,
@@ -181,7 +233,6 @@ contract IncredibleSquaringTaskManager is
     ) external {
         uint32 referenceTaskIndex = taskResponse.referenceTaskIndex;
         uint256 numberToBeSquared = task.numberToBeSquared;
-        // some logical checks
         require(
             allTaskResponses[referenceTaskIndex] != bytes32(0),
             "Task hasn't been responded to yet"
@@ -203,18 +254,15 @@ contract IncredibleSquaringTaskManager is
             "The challenge period for this task has already expired."
         );
 
-        // logic for checking whether challenge is valid or not
         uint256 actualSquaredOutput = numberToBeSquared * numberToBeSquared;
         bool isResponseCorrect = (actualSquaredOutput ==
             taskResponse.numberSquared);
 
-        // if response was correct, no slashing happens so we return
         if (isResponseCorrect == true) {
             emit TaskChallengedUnsuccessfully(referenceTaskIndex, msg.sender);
             return;
         }
 
-        // get the list of hash of pubkeys of operators who weren't part of the task response submitted by the aggregator
         bytes32[] memory hashesOfPubkeysOfNonSigningOperators = new bytes32[](
             pubkeysOfNonSigningOperators.length
         );
@@ -224,97 +272,12 @@ contract IncredibleSquaringTaskManager is
             ] = pubkeysOfNonSigningOperators[i].hashG1Point();
         }
 
-        // verify whether the pubkeys of "claimed" non-signers supplied by challenger are actually non-signers as recorded before
-        // when the aggregator responded to the task
-        // currently inlined, as the MiddlewareUtils.computeSignatoryRecordHash function was removed from BLSSignatureChecker
-        // in this PR: https://github.com/Layr-Labs/eigenlayer-contracts/commit/c836178bf57adaedff37262dff1def18310f3dce#diff-8ab29af002b60fc80e3d6564e37419017c804ae4e788f4c5ff468ce2249b4386L155-L158
-        // TODO(samlaf): contracts team will add this function back in the BLSSignatureChecker, which we should use to prevent potential bugs from code duplication
         bytes32 signatoryRecordHash = keccak256(
             abi.encodePacked(
                 task.taskCreatedBlock,
                 hashesOfPubkeysOfNonSigningOperators
             )
         );
-        require(
-            signatoryRecordHash == taskResponseMetadata.hashOfNonSigners,
-            "The pubkeys of non-signing operators supplied by the challenger are not correct."
-        );
-
-        // get the address of operators who didn't sign
-        address[] memory addresssOfNonSigningOperators = new address[](
-            pubkeysOfNonSigningOperators.length
-        );
-        for (uint i = 0; i < pubkeysOfNonSigningOperators.length; i++) {
-            addresssOfNonSigningOperators[i] = BLSApkRegistry(
-                address(blsApkRegistry)
-            ).pubkeyHashToOperator(hashesOfPubkeysOfNonSigningOperators[i]);
-        }
-
-        // @dev the below code is commented out for the upcoming M2 release
-        //      in which there will be no slashing. The slasher is also being redesigned
-        //      so its interface may very well change.
-        // ==========================================
-        // // get the list of all operators who were active when the task was initialized
-        // Operator[][] memory allOperatorInfo = getOperatorState(
-        //     IRegistryCoordinator(address(registryCoordinator)),
-        //     task.quorumNumbers,
-        //     task.taskCreatedBlock
-        // );
-        // // freeze the operators who signed adversarially
-        // for (uint i = 0; i < allOperatorInfo.length; i++) {
-        //     // first for loop iterate over quorums
-
-        //     for (uint j = 0; j < allOperatorInfo[i].length; j++) {
-        //         // second for loop iterate over operators active in the quorum when the task was initialized
-
-        //         // get the operator address
-        //         bytes32 operatorID = allOperatorInfo[i][j].operatorId;
-        //         address operatorAddress = BLSPubkeyRegistry(
-        //             address(blsPubkeyRegistry)
-        //         ).pubkeyCompendium().pubkeyHashToOperator(operatorID);
-
-        //         // check if the operator has already NOT been frozen
-        //         if (
-        //             IServiceManager(
-        //                 address(
-        //                     BLSRegistryCoordinatorWithIndices(
-        //                         address(registryCoordinator)
-        //                     ).serviceManager()
-        //                 )
-        //             ).slasher().isFrozen(operatorAddress) == false
-        //         ) {
-        //             // check whether the operator was a signer for the task
-        //             bool wasSigningOperator = true;
-        //             for (
-        //                 uint k = 0;
-        //                 k < addresssOfNonSigningOperators.length;
-        //                 k++
-        //             ) {
-        //                 if (
-        //                     operatorAddress == addresssOfNonSigningOperators[k]
-        //                 ) {
-        //                     // if the operator was a non-signer, then we set the flag to false
-        //                     wasSigningOperator == false;
-        //                     break;
-        //                 }
-        //             }
-
-        //             if (wasSigningOperator == true) {
-        //                 BLSRegistryCoordinatorWithIndices(
-        //                     address(registryCoordinator)
-        //                 ).serviceManager().freezeOperator(operatorAddress);
-        //             }
-        //         }
-        //     }
-        // }
-
-        // the task response has been challenged successfully
-        taskSuccesfullyChallenged[referenceTaskIndex] = true;
-
-        emit TaskChallengedSuccessfully(referenceTaskIndex, msg.sender);
-    }
-
-    function getTaskResponseWindowBlock() external view returns (uint32) {
-        return TASK_RESPONSE_WINDOW_BLOCK;
     }
 }
+    
