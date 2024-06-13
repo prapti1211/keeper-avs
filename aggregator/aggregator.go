@@ -125,7 +125,7 @@ func (agg *Aggregator) Start(ctx context.Context) error {
 	go agg.startServer(ctx)
 
 	// TODO(soubhik): refactor task generation/sending into a separate function that we can run as goroutine
-	ticker := time.NewTicker(10 * time.Second)
+	/* ticker := time.NewTicker(10 * time.Second)
 	agg.logger.Infof("Aggregator set to send new task every 10 seconds...")
 	defer ticker.Stop()
 	taskNum := int64(0)
@@ -149,7 +149,7 @@ func (agg *Aggregator) Start(ctx context.Context) error {
 				continue
 			}
 		}
-	}
+	} */
 }
 
 func (agg *Aggregator) sendAggregatedResponseToContract(blsAggServiceResp blsagg.BlsAggregationServiceResponse) {
