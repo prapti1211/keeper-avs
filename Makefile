@@ -77,6 +77,11 @@ start-operator: ##
 	go run operator/cmd/main.go --config config-files/operator.anvil.yaml \
 		2>&1 | zap-pretty
 
+start-task-manager: ## 
+	go run task-manager/cmd/main.go --config config-files/task-manager.yaml \
+		2>&1 | zap-pretty
+
+
 start-challenger: ## 
 	go run challenger/cmd/main.go --config config-files/challenger.yaml \
 		--credible-squaring-deployment ${DEPLOYMENT_FILES_DIR}/credible_squaring_avs_deployment_output.json \
