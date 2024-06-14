@@ -18,7 +18,7 @@ type Listener struct {
 }
 
 func (lis *Listener) ListenForJobEvents(ctx context.Context, contractAddress common.Address, rpcClient *rpc.Client) error {
-    ticker := time.NewTicker(10 * time.Second)
+   /*  ticker := time.NewTicker(10 * time.Second)
     lis.logger.Println("Listener set to send new task every 10 seconds...")
     defer ticker.Stop()
     taskNum := int64(0)
@@ -26,7 +26,7 @@ func (lis *Listener) ListenForJobEvents(ctx context.Context, contractAddress com
     // Send the first task immediately
     _ = lis.sendNewTask(big.NewInt(taskNum))
     taskNum++
-
+ */
     // Set up the Ethereum client
     client := ethclient.NewClient(rpcClient)
 
